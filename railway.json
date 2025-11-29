@@ -4,7 +4,8 @@
     "builder": "dockerfile"
   },
   "deploy": {
-    "healthcheckPath": "/",
+    "healthcheckPath": "/health.php",
+    "healthcheckTimeout": 300,
     "restartPolicyType": "on_failure"
   }
 }
