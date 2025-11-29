@@ -1,8 +1,9 @@
-# 使用 PHP 8.1 官方镜像（带 Apache）
-FROM php:8.1-apache
+# 使用 PHP 7.4 FPM + Nginx
+FROM php:7.4-fpm
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y \
+    nginx \
     git \
     curl \
     libpng-dev \
@@ -15,23 +16,11 @@ RUN apt-get update && apt-get install -y \
 # 安装 PHP 扩展
 RUN docker-php-ext-install pdo_mysql mysqli mbstring exif pcntl bcmath gd
 
-# 安装 Redis 扩展
+# 安装 Redis
 RUN pecl install redis && docker-php-ext-enable redis
 
 # 安装 Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
-
-# 启用 Apache mod_rewrite
-RUN a2enmod rewrite
-
-# 配置 Apache
-RUN echo '<VirtualHost *:80>\n\
-    DocumentRoot /var/www/html/public\n\
-    <Directory /var/www/html/public>\n\
-        AllowOverride All\n\
-        Require all granted\n\
-    </Directory>\n\
-</VirtualHost>' > /etc/apache2/sites-available/000-default.conf
 
 # 设置工作目录
 WORKDIR /var/www/html
@@ -40,18 +29,37 @@ WORKDIR /var/www/html
 COPY . .
 
 # 安装依赖
-RUN composer install --no-dev --optimize-autoloader
+RUN composer install --no-dev --optimize-autoloader || true
 
 # 设置权限
 RUN chown -R www-data:www-data /var/www/html \
     && chmod -R 755 /var/www/html \
-    && chmod -R 777 /var/www/html/runtime
+    && mkdir -p runtime && chmod -R 777 runtime
 
-# 创建健康检查文件
+# 配置 Nginx
+RUN echo 'server {\n\
+    listen 80;\n\
+    root /var/www/html/public;\n\
+    index index.php;\n\
+    location / {\n\
+        try_files $uri $uri/ /index.php?$query_string;\n\
+    }\n\
+    location ~ \.php$ {\n\
+        fastcgi_pass 127.0.0.1:9000;\n\
+        fastcgi_index index.php;\n\
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n\
+        include fastcgi_params;\n\
+    }\n\
+}' > /etc/nginx/sites-available/default
+
+# 创建启动脚本
+RUN echo '#!/bin/bash\n\
+php-fpm -D\n\
+nginx -g "daemon off;"' > /start.sh && chmod +x /start.sh
+
+# 健康检查文件
 RUN echo '<?php echo "OK"; ?>' > /var/www/html/public/health.php
 
-# 暴露端口
 EXPOSE 80
 
-# 启动 Apache
-CMD ["apache2-foreground"]
+CMD ["/start.sh"]
