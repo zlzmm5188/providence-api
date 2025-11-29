@@ -1,0 +1,6 @@
+<?php
+return [
+    'secret' => 'Providence_2025_Secure_Key_Only_You_Know',
+    'ttl' => 7200, // 2小时
+    'alg' => 'HS256',
+];

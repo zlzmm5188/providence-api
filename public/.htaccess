@@ -1,0 +1,22 @@
+<IfModule mod_rewrite.c>
+  Options +FollowSymlinks -Multiviews
+  RewriteEngine On
+
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteRule ^(.*)$ index.php/$1 [QSA,PT,L]
+</IfModule>
+# CORS Headers (备用方案，如果中间件不生效)
+<IfModule mod_headers.c>
+    # 允许所有来源（开发环境）
+    SetEnvIf Origin "^https?://(localhost|127\.0\.0\.1|.*\.4kp3l0iq\.top)(:[0-9]+)?$" AccessControlAllowOrigin=$0
+    Header always set Access-Control-Allow-Origin %{AccessControlAllowOrigin}e env=AccessControlAllowOrigin
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    Header always set Access-Control-Allow-Headers "Authorization, Content-Type, Token, X-Requested-With, Accept, Origin"
+    Header always set Access-Control-Allow-Credentials "true"
+    Header always set Access-Control-Max-Age "1800"
+
+    # 处理OPTIONS预检请求
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteRule ^(.*)$ $1 [R=200,L]
+</IfModule>

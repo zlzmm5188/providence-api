@@ -1,0 +1,200 @@
+<?php
+namespace app\api\controller;
+
+use app\common\model\User;
+use app\common\model\UserRelation;
+use app\common\model\SystemConfig;
+use app\common\service\TelegramBotService;
+use think\facade\Db;
+use Firebase\JWT\JWT;
+use Firebase\JWT\Key;
+
+class Auth
+{
+    /**
+     * 用户注册
+     */
+    public function register()
+    {
+        $username = input('username');
+        $password = input('password');
+        $inviteCode = input('invite_code', '');
+
+        // 1. 验证用户名
+        if (!check_username($username)) {
+            return error('用户名格式错误（4-20位字母数字下划线）');
+        }
+
+        // 2. 检查用户名是否存在
+        if (User::where('username', $username)->count() > 0) {
+            return error('用户名已存在');
+        }
+
+        // 3. 验证密码
+        if (strlen($password) < 6 || strlen($password) > 20) {
+            return error('密码长度必须为6-20位');
+        }
+
+        // 4. 验证邀请码
+        $parentId = null;
+        $requireInviteCode = SystemConfig::where('key', 'require_invite_code')
+            ->value('value');
+
+        if ($requireInviteCode == 1) {
+            // 强制要求邀请码
+            if (empty($inviteCode)) {
+                return error('请填写邀请码');
+            }
+
+            $parent = User::where('invite_code', $inviteCode)->find();
+            if (!$parent) {
+                return error('邀请码不存在');
+            }
+            $parentId = $parent->user_id;
+        } else {
+            // 邀请码可选
+            if (!empty($inviteCode)) {
+                $parent = User::where('invite_code', $inviteCode)->find();
+                if (!$parent) {
+                    return error('邀请码不存在');
+                }
+                $parentId = $parent->user_id;
+            }
+        }
+
+        Db::startTrans();
+        try {
+            // 5. 创建用户
+            $user = User::create([
+                'username' => $username,
+                'password' => password_hash($password, PASSWORD_DEFAULT),
+                'parent_id' => $parentId,
+                'vip_level' => 0,
+                'status' => 1,
+                'created_at' => date('Y-m-d H:i:s')
+            ]);
+
+            // 6. 建立推荐关系
+            if ($parentId) {
+                // 一级关系
+                UserRelation::create([
+                    'parent_id' => $parentId,
+                    'child_id' => $user->user_id,
+                    'level' => 1
+                ]);
+
+                // 二级关系
+                $parent = User::find($parentId);
+                if ($parent && $parent->parent_id) {
+                    UserRelation::create([
+                        'parent_id' => $parent->parent_id,
+                        'child_id' => $user->user_id,
+                        'level' => 2
+                    ]);
+                }
+            }
+
+            Db::commit();
+
+            // 7. 发送Telegram通知
+            TelegramBotService::notifyUserRegister([
+                'username' => $user->username,
+                'uid' => $user->uid,
+                'invite_code' => $user->invite_code,
+                'parent_id' => $parentId,
+                'ip' => request()->ip()
+            ]);
+
+            // 8. 生成Token
+            $token = $this->createToken($user->user_id);
+
+            return success('注册成功', [
+                'user_id' => $user->user_id,
+                'username' => $user->username,
+                'invite_code' => $user->invite_code,
+                'token' => $token
+            ]);
+
+        } catch (\Exception $e) {
+            Db::rollback();
+            return error('注册失败：' . $e->getMessage());
+        }
+    }
+
+    /**
+     * 用户登录
+     */
+    public function login()
+    {
+        $username = input('username');
+        $password = input('password');
+
+        // 1. 查找用户
+        $user = User::where('username', $username)->find();
+
+        if (!$user) {
+            return error('用户名或密码错误');
+        }
+
+        // 2. 验证密码
+        if (!password_verify($password, $user->password)) {
+            return error('用户名或密码错误');
+        }
+
+        // 3. 检查账户状态
+        if ($user->status != 1) {
+            return error('账户已被禁用');
+        }
+
+        // 4. 更新登录信息
+        $user->last_login_time = date('Y-m-d H:i:s');
+        $user->last_login_ip = request()->ip();
+        $user->save();
+
+        // 5. 生成Token
+        $token = $this->createToken($user->user_id);
+
+        // 6. 返回用户信息（包含三个ID字段兼容前台）
+        return success('登录成功', [
+            'token' => $token,
+            'user_info' => [
+                'user_id' => $user->user_id,
+                'id' => $user->user_id,
+                'uid' => $user->user_id,
+                'username' => $user->username,
+                'vip_level' => $user->vip_level,
+                'balance_cny' => $user->balance_cny,
+                'balance_usdt' => $user->balance_usdt,
+                'frozen_cny' => $user->frozen_cny,
+                'frozen_usdt' => $user->frozen_usdt,
+                'is_kyc' => $user->is_kyc,
+                'invite_code' => $user->invite_code
+            ]
+        ]);
+    }
+
+    /**
+     * 登出
+     */
+    public function logout()
+    {
+        // Token在前端删除即可
+        return success('登出成功');
+    }
+
+    /**
+     * 生成JWT Token
+     */
+    private function createToken($userId)
+    {
+        $payload = [
+            'iss' => 'providence',
+            'iat' => time(),
+            'exp' => time() + 7200, // 2小时
+            'user_id' => $userId
+        ];
+
+        $secret = env('jwt.secret', 'your_jwt_secret_key');
+        return JWT::encode($payload, $secret, 'HS256');
+    }
+}
